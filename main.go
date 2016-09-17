@@ -6,62 +6,40 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"net"
-	"regexp"
+	"net/http"
 )
 
 var (
-	listenAddr = flag.String("l", "localhost:8080", "local address to listen on")
-	remoteAddr = flag.String("r", "test.gilgil.net:80", "remote address to dial")
+	listenPort = flag.String("p", ":8080", "local address to listen on")
 )
-
-type Replacer func([]byte) []byte
-
-var HostRe = regexp.MustCompile(`Host: (.*)\b`)
 
 func main() {
 	flag.Parse()
-	ln, err := net.Listen("tcp", *listenAddr)
-	if err != nil {
-		log.Fatalf("listening: %v", err)
-	}
-	proxy(ln, *remoteAddr, func(r []byte) (w []byte) {
-		return bytes.Replace(r, []byte("hello"), []byte("?????"), -1)
-	})
+	http.HandleFunc("/", proxy)
+	http.ListenAndServe(*listenPort, nil)
 }
 
-func proxy(ln net.Listener, remoteAddr string, replacer Replacer) error {
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return err
-		}
-		log.Printf("connected: %v", conn.RemoteAddr())
-		go handle(conn, remoteAddr, replacer)
+func replacer(r io.Reader) io.Reader {
+	d, err := ioutil.ReadAll(r)
+	if err != nil {
+		log.Fatal(err)
 	}
+	dd := bytes.Replace(d, []byte("hello"), []byte("?????"), -1)
+	return bytes.NewReader(dd)
 }
 
-func handle(conn net.Conn, remoteAddr string, replacer Replacer) {
-	defer conn.Close()
-
-	// TODO.
-	// Accept된 Connection에서 Host를 추출한 뒤
-	// Connection을 다시 Writable한 상태로 변경하기.
-	rconn, err := net.Dial("tcp", remoteAddr)
+func proxy(w http.ResponseWriter, r *http.Request) {
+	req, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
 	if err != nil {
-		log.Printf("dialing remote: %v", err)
+		log.Println(err)
 		return
 	}
-	defer rconn.Close()
 
-	copy(conn, rconn, replacer)
-}
-
-func copy(sender, receiver io.ReadWriter, replacer Replacer) {
-	go io.Copy(receiver, sender)
-
-	// TODO.
-	// 지나친 응답 딜레이 원인 찾기
-	received, _ := ioutil.ReadAll(receiver)
-	bytes.NewReader(replacer(received)).WriteTo(sender)
+	client := http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	io.Copy(w, replacer(resp.Body))
 }
