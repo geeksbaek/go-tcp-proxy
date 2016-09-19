@@ -8,11 +8,11 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"strings"
 )
 
 var (
 	listenAddr = flag.String("l", "localhost:8080", "local address to listen on")
-	remoteAddr = flag.String("r", "test.gilgil.net:80", "remote address to dial")
 )
 
 type Replacer func([]byte) []byte
@@ -25,24 +25,41 @@ func main() {
 	if err != nil {
 		log.Fatalf("listening: %v", err)
 	}
-	proxy(ln, *remoteAddr, func(r []byte) (w []byte) {
+	proxy(ln, func(r []byte) (w []byte) {
 		return bytes.Replace(r, []byte("hello"), []byte("?????"), -1)
 	})
 }
 
-func proxy(ln net.Listener, remoteAddr string, replacer Replacer) error {
+func proxy(ln net.Listener, replacer Replacer) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return err
 		}
 		log.Printf("connected: %v", conn.RemoteAddr())
-		go handle(conn, remoteAddr, replacer)
+		go handle(conn, replacer)
 	}
 }
 
-func handle(conn net.Conn, remoteAddr string, replacer Replacer) {
+func handle(conn net.Conn, replacer Replacer) {
 	defer conn.Close()
+
+	reqData, err := ioutil.ReadAll(conn)
+	if err != nil {
+		panic(err)
+	}
+
+	matched := HostRe.FindSubmatch(reqData)
+	if len(matched) != 2 {
+		return
+	}
+
+	remoteAddr := func() string {
+		if strings.Contains(string(matched[1]), ":") {
+			return string(matched[1])
+		}
+		return string(matched[1]) + ":80"
+	}()
 
 	// TODO.
 	// Accept된 Connection에서 Host를 추출한 뒤
@@ -54,14 +71,10 @@ func handle(conn net.Conn, remoteAddr string, replacer Replacer) {
 	}
 	defer rconn.Close()
 
-	copy(conn, rconn, replacer)
-}
-
-func copy(sender, receiver io.ReadWriter, replacer Replacer) {
-	go io.Copy(receiver, sender)
+	go io.Copy(rconn, bytes.NewReader(reqData))
 
 	// TODO.
 	// 지나친 응답 딜레이 원인 찾기
-	received, _ := ioutil.ReadAll(receiver)
-	bytes.NewReader(replacer(received)).WriteTo(sender)
+	received, _ := ioutil.ReadAll(rconn)
+	bytes.NewReader(replacer(received)).WriteTo(conn)
 }
